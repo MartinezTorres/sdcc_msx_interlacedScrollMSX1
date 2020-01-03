@@ -1,6 +1,20 @@
 #include <map/common.h>
 #include <tms99X8.h>
 
+////////////////////////////////////////////////////////////////////////
+// Implementation variables
+static uint8_t PN_Idx;
+static uint8_t bank;
+static MapBank *bankPtr;
+
+static const uint8_t *tile16IdxPtr;
+static const uint8_t *tile8IdxBase;
+static const uint8_t *stagesPtr;
+
+
+// FASTER TMS99X8 MEMCPY with fixed sizes
+static void TMS99X8_memcpy8(uint16_t dst, const uint8_t *src);
+static void TMS99X8_memcpy16(uint16_t dst, const uint8_t *src);
 #ifdef MSX
 static void TMS99X8_memcpy8(uint16_t dst, const uint8_t *src) {
 
@@ -22,91 +36,6 @@ static void TMS99X8_memcpy16(uint16_t dst, const uint8_t *src) {
 static void TMS99X8_memcpy8 (uint16_t dst, const uint8_t *src) { TMS99X8_memcpy(dst,src,8); }
 static void TMS99X8_memcpy16(uint16_t dst, const uint8_t *src) { TMS99X8_memcpy(dst,src,16); }
 #endif
-
-/*
-
-void APPEND(MAP_NAME,_renew_tile8_old)(uint8_t rowScreen8, uint8_t colScreen8) {
-    
-    uint8_t bank = rowScreen8>>3;
-
-    uint8_t rowWorld8 = rowScreen8 + map.pos.i;
-    uint8_t colWorld8 = colScreen8 + map.pos.j;
-    
-    uint8_t PN_Idx =  (rowWorld8<<5) + colWorld8;
-
-    uint8_t rowWorld16 = rowWorld8 >> 1;
-    uint8_t colWorld16 = colWorld8 >> 1;
-
-    uint8_t oldTile8 = map.bank[bank].tile8[PN_Idx]; // up to 256 tile8s to fit in a segment.
-    uint8_t stageSegment = map.stages[rowWorld16>>1][colWorld16>>1]; // stages apply in blocks of 32x32 pixels
-    mapper_load_module(MAP_TILES16, PAGE_C);
-    mapper_load_segment(stageSegment, PAGE_D);
-    {
-        uint8_t tile16Idx = MAP_MAP16[rowWorld16][colWorld16];
-        uint8_t tile8Idx = MAP_TILES16[tile16Idx][rowWorld8&1][colWorld8&1];
-
-        //printf("(%2d,%2d) PN_Idx:%3d count:%d\n",rowScreen8, colScreen8, PN_Idx,map.bank[bank].count[tile8Idx]);
-        if ((PN_Idx & 1) == 0) {
-            if (map.bank[bank].countL[tile8Idx]++ == 0) {
-                
-                uint8_t patternIdx = map.bank[bank].patternL[tile8Idx] = getPattern(bank);
-                mapper_load_module(MAP_TILES8L, PAGE_C);
-                TMS99X8_memcpy16(MODE2_ADDRESS_PG + bank*(8*256) + (((uint16_t)patternIdx)<<3), MAP_TILES8L[tile8Idx][0]);
-                TMS99X8_memcpy16(MODE2_ADDRESS_CT + bank*(8*256) + (((uint16_t)patternIdx)<<3), MAP_TILES8L[tile8Idx][1]);
-            }
-            map.bank[bank].tile8[PN_Idx] = tile8Idx;
-            map.bank[bank].PN[PN_Idx] = map.bank[bank].patternL[tile8Idx];
-        } else {
-            if (map.bank[bank].countR[tile8Idx]++ == 0) {
-                
-                uint8_t patternIdx = map.bank[bank].patternR[tile8Idx] = getPattern(bank);
-                mapper_load_module(MAP_TILES8R, PAGE_C);
-                TMS99X8_memcpy16(MODE2_ADDRESS_PG + bank*(8*256) + (((uint16_t)patternIdx)<<3), MAP_TILES8R[tile8Idx][0]);
-                TMS99X8_memcpy16(MODE2_ADDRESS_CT + bank*(8*256) + (((uint16_t)patternIdx)<<3), MAP_TILES8R[tile8Idx][1]);
-            }
-            map.bank[bank].tile8[PN_Idx] = tile8Idx;
-            map.bank[bank].PN[PN_Idx] = map.bank[bank].patternR[tile8Idx];
-        }
-    }
-    
-    if (oldTile8) {
-        if ((PN_Idx & 1) == 0) {
-            if (--map.bank[bank].countL[oldTile8]==0) {
-                printf("freeing pattern\n");
-                freePattern(bank, map.bank[bank].patternL[oldTile8]);
-            }
-        } else {
-            if (--map.bank[bank].countR[oldTile8]==0) {
-                printf("freeing pattern\n");
-                freePattern(bank, map.bank[bank].patternR[oldTile8]);
-            }
-        }
-    }           
-}
-
-void APPEND(MAP_NAME,_renew_col)(uint8_t colScreen8) {
-    
-    uint8_t i=0;
-    for (i=0; i<24; i++)
-        APPEND(MAP_NAME,_renew_tile8)(i,colScreen8);
-}
-
-void APPEND(MAP_NAME,_renew_row)(uint8_t rowScreen8) {
-    
-    uint8_t j=0;
-    for (j=0; j<32; j++)
-        APPEND(MAP_NAME,_renew_tile8)(rowScreen8,j);
-}*/
-
-
-////////////////////////////////////////////////////////////////////////
-// FASTER IMPLEMENTATION
-
-static uint8_t PN_Idx;
-static uint8_t bank;
-static MapBank *bankPtr;
-////////////////////////////////////////////////////////////////////////
-// populates the pattern to the corresponding tile8 into the patern name table
 
 
 static void renew_col_int(uint8_t colScreen8) __z88dk_fastcall;
@@ -402,282 +331,6 @@ static void populateTile8R(const uint8_t *tile8IdxPtr) __z88dk_fastcall {
 }
 
 #endif
-
-static void store_col_to_clear(uint8_t colScreen8) __z88dk_fastcall;
-#ifdef MSX
-
-inline static void store_col_to_clear_placeholder() {
-    
-__asm
-;	---------------------------------
-; Function store_col_to_clear
-; ---------------------------------
-_store_col_to_clear:
-    ld  c, #0x20
-;src/map/implementation.h:449: uint8_t *dst = &map.alignedBuffer[0];
-;src/map/implementation.h:450: uint8_t pn = colScreen8 + map.pos.j;
-	ld	a, (#(_map + 0x2101) + 0)
-	add	a, l
-    ld  l, a
-;src/map/implementation.h:451: REPEAT8(*dst++ = map.bank[0].tile8[pn]; pn+=32;);
-    ld  de, #(_map + 0x2000)
-	ld	h, #>((_map + 1024))
-__endasm;
-REPEAT8(__asm__(
-"    ld a, (hl) \n "
-"    ld (de), a \n "
-
-"    inc e \n "
-
-"    ld a, l \n "
-"    add    a, c \n "
-"    ld  l, a \n "
-););
-__asm    
-;src/map/implementation.h:452: REPEAT8(*dst++ = map.bank[1].tile8[pn]; pn+=32;);
-	ld	h, #>((_map + 3072))
-__endasm;
-REPEAT8(__asm__(
-"    ld a, (hl) \n "
-"    ld (de), a \n "
-
-"    inc e \n "
-
-"    ld a, l \n "
-"    add    a, c \n "
-"    ld  l, a \n "
-););
-__asm    
-;src/map/implementation.h:453: REPEAT8(*dst++ = map.bank[2].tile8[pn]; pn+=32;);
-	ld	h, #>((_map + 5120))
-__endasm;
-REPEAT8(__asm__(
-"    ld a, (hl) \n "
-"    ld (de), a \n "
-
-"    inc e \n "
-
-"    ld a, l \n "
-"    add    a, c \n "
-"    ld  l, a \n "
-););
-__asm
-	ret
-__endasm;
-}
-
-#else
-
-static void store_col_to_clear(uint8_t colScreen8) __z88dk_fastcall {
-    
-    uint8_t *dst = &map.alignedBuffer[0];
-    uint8_t pn = colScreen8 + map.pos.j;
-    REPEAT8(*dst++ = map.bank[0].tile8[pn]; pn+=32;);
-    REPEAT8(*dst++ = map.bank[1].tile8[pn]; pn+=32;);
-    REPEAT8(*dst++ = map.bank[2].tile8[pn]; pn+=32;);
-}
-
-
-#endif
-
-static void clear_col() __z88dk_fastcall;
-#ifdef MSX
-
-
-inline static void clear_col_placeholder() {
-
-__asm
-
-;	---------------------------------
-; Function clear_col
-; ---------------------------------
-_clear_col:
-	ld	a,(#_PN_Idx + 0)
-	rrca
-	jp C,clear_col1
-    jp clear_col0
-
-clear_col0:
-    ld  de, #(_map + 0x2000)
-    ld  h, #>(_map + 0x0000)
-    ld  b, #0x8
-
-clear_col0_l00:
-    ld  a, (de)
-    or  a, a
-    jp  z, clear_col0_l01
-    ld  l, a
-    ld  a, (hl)
-    dec a
-    ld  (hl), a
-    jp  nz, clear_col0_l01
-    inc h
-    inc h
-    ld  c, (hl)
-    ld  hl, #(_map+0x0670)
-    dec (hl)
-    ld  l, (hl)
-    ld  (hl), c
-    ld  h, #>(_map + 0x0000)
-clear_col0_l01:
-    inc de
-    djnz clear_col0_l00
-
-    ld  h, #>(_map + 0x0800)
-    ld  b, #0x8
-clear_col0_l10:
-    ld  a, (de)
-    or  a, a
-    jp  z, clear_col0_l11
-    ld  l, a
-    ld  a, (hl)
-    dec a
-    ld  (hl), a
-    jp  nz, clear_col0_l11
-    inc h
-    inc h
-    ld  c, (hl)
-    ld  hl, #(_map+0x0800+0x0670)
-    dec (hl)
-    ld  l, (hl)
-    ld  (hl), c
-    ld  h, #>(_map + 0x0800)
-clear_col0_l11:
-    inc de
-    djnz clear_col0_l10
-
-    ld  h, #>(_map + 0x1000)
-    ld  b, #0x8
-clear_col0_l20:
-    ld  a, (de)
-    or  a, a
-    jp  z, clear_col0_l21
-    ld  l, a
-    ld  a, (hl)
-    dec a
-    ld  (hl), a
-    jp  nz, clear_col0_l21
-    inc h
-    inc h
-    ld  c, (hl)
-    ld  hl, #(_map+0x1670)
-    dec (hl)
-    ld  l, (hl)
-    ld  (hl), c
-    ld  h, #>(_map + 0x1000)
-clear_col0_l21:
-    inc de
-    djnz clear_col0_l20
-    ret
-
-
-clear_col1:
-    ld  de, #(_map + 0x2000)
-    ld  h, #>(_map + 0x0100)
-    ld  b, #0x8
-
-clear_col1_l00:
-    ld  a, (de)
-    or  a, a
-    jp  z, clear_col1_l01
-    ld  l, a
-    ld  a, (hl)
-    dec a
-    ld  (hl), a
-    jp  nz, clear_col1_l01
-    inc h
-    inc h
-    ld  c, (hl)
-    ld  hl, #(_map+0x0670)
-    dec (hl)
-    ld  l, (hl)
-    ld  (hl), c
-    ld  h, #>(_map + 0x0100)
-clear_col1_l01:
-    inc de
-    djnz clear_col1_l00
-
-    ld  h, #>(_map + 0x0900)
-    ld  b, #0x8
-clear_col1_l10:
-    ld  a, (de)
-    or  a, a
-    jp  z, clear_col1_l11
-    ld  l, a
-    ld  a, (hl)
-    dec a
-    ld  (hl), a
-    jp  nz, clear_col1_l11
-    inc h
-    inc h
-    ld  c, (hl)
-    ld  hl, #(_map+0x0800+0x0670)
-    dec (hl)
-    ld  l, (hl)
-    ld  (hl), c
-    ld  h, #>(_map + 0x0900)
-clear_col1_l11:
-    inc de
-    djnz clear_col1_l10
-
-    ld  h, #>(_map + 0x1100)
-    ld  b, #0x8
-clear_col1_l20:
-    ld  a, (de)
-    or  a, a
-    jp  z, clear_col1_l21
-    ld  l, a
-    ld  a, (hl)
-    dec a
-    ld  (hl), a
-    jp  nz, clear_col1_l21
-    inc h
-    inc h
-    ld  c, (hl)
-    ld  hl, #(_map+0x1670)
-    dec (hl)
-    ld  l, (hl)
-    ld  (hl), c
-    ld  h, #>(_map + 0x1100)
-clear_col1_l21:
-    inc de
-    djnz clear_col1_l20
-    ret
-
-
-__endasm;
-}
-
-#else
-
-static void clear_col() __z88dk_fastcall {
-    
-    uint8_t *src = &map.alignedBuffer[0];
-    uint8_t i,j;
-    if ((PN_Idx & 1) == 0) {
-        for (i=0; i<3; i++) {
-            bank=i; bankPtr = &map.bank[i];
-            for (j=0; j<8; j++) {
-                uint8_t t = *src++;
-                if (t!=0 && --bankPtr->countL[t]==0) freePattern(bank, bankPtr->patternL[t]);
-            }
-        }
-    } else {
-        for (i=0; i<3; i++) {
-            bank=i; bankPtr = &map.bank[i];
-            for (j=0; j<8; j++) {
-                uint8_t t = *src++;
-                if (t!=0 && --bankPtr->countR[t]==0) freePattern(bank, bankPtr->patternR[t]);
-            }
-        }
-    }    
-}
-
-#endif
-
-static const uint8_t *tile16IdxPtr;
-static const uint8_t *tile8IdxBase;
-static const uint8_t *stagesPtr;
 
 static void renew_col_int_blockL();
 static void renew_col_int_blockR();
@@ -994,35 +647,16 @@ void APPEND(MAP_NAME,_draw_tile8)(uint8_t rowScreen8, uint8_t colScreen8) {
     }
 }
 
-void APPEND(MAP_NAME,_draw_col_old)(uint8_t colScreen8) {
-    
-    uint8_t i=0;
-    for (i=0; i<24; i++)
-        APPEND(MAP_NAME,_draw_tile8)(i,colScreen8);
-}
-
-void APPEND(MAP_NAME,_draw_row_old)(uint8_t rowScreen8) {
-    
-    uint8_t j=0;
-    for (j=0; j<32; j++)
-        APPEND(MAP_NAME,_draw_tile8)(rowScreen8,j);
-}
-
-
 static void renew_row_int_block();
 #ifdef MSX
-
-
 
 inline static void renew_row_int_block_placeholder() {
 
 __asm
-
 ;	---------------------------------
 ; Function renew_row_int_block
 ; ---------------------------------
 _renew_row_int_block:
-;src/map/implementation.h:1015: const uint8_t *tile8IdxPtr = tile8IdxBase + 4 * *tile16IdxPtr;
 	ld	hl, (_tile16IdxPtr)
 	ld	l, (hl)
 	ld	h, #0x00
@@ -1035,16 +669,13 @@ _renew_row_int_block:
 	ld	hl, #_PN_Idx
 	inc	(hl)
     pop hl
-;src/map/implementation.h:1017: populateTile8R(tile8IdxPtr + 1); PN_Idx ++;
     inc hl
 	call	_populateTile8R
 	ld	hl, #_PN_Idx
 	inc	(hl)
-;src/map/implementation.h:1018: tile16IdxPtr ++; 
 	ld	hl, (_tile16IdxPtr)
 	inc	hl
 	ld	(_tile16IdxPtr), hl
-;src/map/implementation.h:1019: }
 	ret
 __endasm;    
 
@@ -1140,8 +771,6 @@ void APPEND(MAP_NAME,_draw_row)(uint8_t rowScreen8) {
         }
     }
 }
-
-
 
 
 void APPEND(MAP_NAME,_erase_tile8)(uint8_t rowScreen8, uint8_t colScreen8) {
